@@ -1,0 +1,403 @@
+---
+title: "MTF Drug Sources Models (w/ Controls for Linear Trends)"
+subtitle: "Grade 12: 2009-2022"
+author: "John Jardine"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: cosmo
+    toc: TRUE
+---
+
+<style type="text/css">
+.main-container {
+  max-width: 100% !important;
+  margin: auto;
+}
+</style>
+
+# Setup
+
+```{r mySetup, echo = TRUE, message = FALSE, warning = FALSE}
+# r packages used
+if(!("pacman" %in% rownames(installed.packages()))) {install.packages("pacman")}
+pacman::p_load(r_lang, haven, tidyverse, sandwich, lmtest, survey, knitr, kableExtra, ggplot2, ggh4x, scales)
+
+# read in the datasets created by "MTF_Drug_Sources.Rmd"
+form_1 = read_dta("C:/Users/jjardine/Desktop/MTF/MTF_Drug_Sources/code/form_1_2009_2022.dta")
+form_2 = read_dta("C:/Users/jjardine/Desktop/MTF/MTF_Drug_Sources/code/form_2_2009_2022.dta")
+
+# function to replicate standard errors from stata
+# source: https://stackoverflow.com/a/27368468
+sandwich1 <- function(object, ...) sandwich(object) * nobs(object) / (nobs(object) - 1)
+
+# dichotomize the lifetime medical use variables
+form_1 = form_1 %>%
+  mutate(dr_told_tk_amph_b = case_when(dr_told_tk_amph %in% 2:3 ~ 1,
+                                       dr_told_tk_amph == 1 ~ 0),
+         
+         dr_told_tk_trnq_b = case_when(dr_told_tk_trnq %in% 2:3 ~ 1,
+                                       dr_told_tk_trnq == 1 ~ 0),
+         
+         dr_told_tk_narc_b = case_when(dr_told_tk_narc %in% 2:3 ~ 1,
+                                       dr_told_tk_narc == 1 ~ 0))
+
+# create separate survey design objects for forms 1 and 2
+des1 = svydesign(ids = ~1, data = form_1, weights = ~sampling_weight)
+des2 = svydesign(ids = ~1, data = form_2, weights = ~sampling_weight)
+
+# combine the data from forms 1 and 2
+forms_all = bind_rows(form_1, form_2)
+
+# create the survey design object using the data from both forms
+desAll = svydesign(ids = ~1, data = forms_all, weights = ~sampling_weight)
+```
+
+# Figure 1
+
+```{r fig1, echo = TRUE, message = FALSE, warning = FALSE}
+# common plotting theme to use
+theme_set(
+  theme_bw() +
+    theme(strip.text.x = element_text(size = 16, face = "bold", color = "black"),
+          strip.background = element_rect(fill = "#EEEEEE"),
+          axis.text.x = element_text(size = 16, angle = 45, vjust = 1, hjust = 1, face = "bold", color = "black"),
+          axis.text.y = element_text(size = 16, face = "bold", color = "black"),
+          legend.title = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          plot.title = element_blank(),
+          plot.caption = element_text(size = 14, color = "black"),
+          axis.ticks.length = unit(0.25, "cm"))
+)
+
+plot_vars = choice_vars = c("amph_last12m_b",    "trql_last12m_b",    "narc_last12m_b",    "dr_told_tk_amph_b", "dr_told_tk_trnq_b", "dr_told_tk_narc_b",
+                            "easy_gt_amphtmns1", "easy_gt_tranqliz1", "easy_gt_narcotic1", "easy_gt_amphtmns5", "easy_gt_tranqliz5", "easy_gt_narcotic5")
+
+f1 = bind_rows(map(plot_vars,
+                   function(.x) {
+                     dat = if(.x %in% names(form_1)) {form_1} else {form_2}
+                     
+                     dat %>%
+                       group_by(year_group) %>%
+                       summarize(pct := weighted.mean(!!sym(.x), sampling_weight, na.rm = TRUE)) %>%
+                       mutate(variable = .x) })) %>%
+  mutate(drugClass = case_when(grepl("amph", variable) ~ "Stimulants",
+                               grepl("trql|trnq|tranq", variable) ~ "Benzodiazepines",
+                               grepl("narc", variable) ~ "Opioids"),
+         outcome = case_when(grepl("last12m", variable) ~ "Past-year nonmedical use",
+                             grepl("dr_told_tk", variable) ~ "Lifetime medical use",
+                             grepl("easy_gt.*1", variable) ~ "'Probably impossible to get'",
+                             grepl("easy_gt.*5", variable) ~ "'Very easy to get'"),
+         year_group = case_match(year_group,
+                                 0 ~ "2009-10",
+                                 1 ~ "2011-12",
+                                 2 ~ "2013-14",
+                                 3 ~ "2015-16",
+                                 4 ~ "2017-18",
+                                 5 ~ "2019-20",
+                                 6 ~ "2021-22"),
+         outcome = factor(outcome, levels = c("Past-year nonmedical use", "Lifetime medical use", "'Probably impossible to get'", "'Very easy to get'"), ordered = TRUE))
+
+plot_f1 = f1 %>%
+  ggplot(aes(x = year_group, y = pct, color = drugClass, shape = drugClass, linetype = drugClass, group = drugClass)) +
+  geom_line(linewidth = 1.15, alpha = 1, position = position_dodge(width = 0.5)) +
+  geom_point(size = 4, alpha = 1, position = position_dodge(width = 0.5)) +
+  facet_wrap(~outcome, ncol = 2, scales = "free_y") +
+  scale_x_discrete(expand = c(0, 0.35)) +
+  scale_color_manual(values = c("#009E73", "#56B4E9", "#D55E00")) +
+  scale_linetype_manual(values = c(1, 2, 3)) +
+  facetted_pos_scales(y = list(outcome == "Past-year nonmedical use"     ~ scale_y_continuous(limits = c(0, 0.20), breaks = seq(0, 0.20, 0.05),  expand = c(0, 0), labels = scales::percent),
+                               outcome == "Lifetime medical use"         ~ scale_y_continuous(limits = c(0, 0.20), breaks = seq(0, 0.20, 0.05),  expand = c(0, 0), labels = scales::percent),
+                               outcome == "'Probably impossible to get'" ~ scale_y_continuous(limits = c(0, 0.44), breaks = seq(0, 0.40, 0.10),  expand = c(0, 0), labels = scales::percent),
+                               outcome == "'Very easy to get'"           ~ scale_y_continuous(limits = c(0, 0.44), breaks = seq(0, 0.40, 0.10),  expand = c(0, 0), labels = scales::percent))) +
+  theme(legend.text = element_text(size = 16, margin = margin(r = 40), face = "bold", color = "black"),
+        legend.position = "bottom",
+        legend.key.width = unit(2.75, "cm"))
+
+ggsave(file = "C:/Users/jjardine/Desktop/MTF/MTF_Drug_Sources/documentation/AJP_10292024/study_18_ajp_figure_1.pdf", plot = plot_f1, width = 10.5*1.1, height = 9.5*1.1)
+```
+
+# Figure 2
+
+```{r fig2, echo = TRUE, message = FALSE, warning = FALSE}
+source_vars = choice_vars = c("amph_src_internt", "amph_src_frnd_ask", "amph_src_rltv_ask", "amph_src_frnd_free", "amph_src_rltv_free", "amph_src_frnd_bght", "amph_src_rltv_bght", "amph_src_prescrp", "amph_src_dealer",
+                              "trq_src_internet",  "trq_src_frnd_ask",  "trq_src_rltv_ask",  "trq_src_frnd_free",  "trq_src_rltv_free",  "trq_src_frnd_bght",  "trq_src_rltv_bght", "trq_src_prescrpt",  "trq_src_dealer",
+                              "narc_src_internt", "narc_src_frnd_ask", "narc_src_rltv_ask", "narc_src_frnd_free", "narc_src_rltv_free", "narc_src_frnd_bght", "narc_src_rltv_bght", "narc_src_prescrp", "narc_src_dealer")
+
+f2 = bind_rows(map(source_vars,
+                   function(.x) {
+                     form_1 %>%
+                       group_by(year_group) %>%
+                       summarize(pct := weighted.mean(!!sym(.x), sampling_weight, na.rm = TRUE)) %>%
+                       mutate(drugSource = .x) })) %>%
+  mutate(drug = gsub("_.*", "", drugSource),
+         drugSource = gsub(".*src_", "", drugSource)) %>%
+  mutate(year_group = case_match(year_group,
+                                 0 ~ "2009-10",
+                                 1 ~ "2011-12",
+                                 2 ~ "2013-14",
+                                 3 ~ "2015-16",
+                                 4 ~ "2017-18",
+                                 5 ~ "2019-20",
+                                 6 ~ "2021-22"),
+         drug = case_match(drug,
+                           "amph" ~ "Stimulants",
+                           "trq"  ~ "Benzodiazepines",
+                           "narc" ~ "Opioids"),
+         drugSource = case_match(drugSource,
+                                 "internt"   ~ "Bought on the internet", "internet" ~ "Bought on the internet",
+                                 "frnd_ask"  ~ "Took from a friend",
+                                 "rltv_ask"  ~ "Took from a relative",
+                                 "frnd_free" ~ "Given for free by a friend",
+                                 "rltv_free" ~ "Given for free by a relative",
+                                 "frnd_bght" ~ "Bought from a friend",
+                                 "rltv_bght" ~ "Bought from a relative",
+                                 "prescrp"   ~ "From a prescription I had", "prescrpt"  ~ "From a prescription I had",
+                                 "dealer"    ~ "Bought from a drug dealer / stranger"))
+
+plot_f2 = f2 %>%
+  mutate(drugSource = factor(drugSource, levels = c("Given for free by a friend",           "Bought from a friend",         "From a prescription I had",
+                                                    "Bought from a drug dealer / stranger", "Given for free by a relative", "Took from a relative",
+                                                    "Took from a friend",                   "Bought on the internet",       "Bought from a relative"), ordered = TRUE)) %>%
+  ggplot(aes(x = year_group, y = pct, color = drug, shape = drug, linetype = drug, group = interaction(drug, drugSource))) +
+  geom_line(linewidth = 1.15, alpha = 1, position = position_dodge(width = 0.5)) +
+  geom_point(size = 4, alpha = 1, position = position_dodge(width = 0.5)) +
+  facet_wrap(~drugSource, ncol = 3, scales = "free_y") +
+  scale_x_discrete(expand = c(0, 0.35)) +
+  scale_color_manual(values = c("#009E73", "#56B4E9", "#D55E00")) +
+  scale_linetype_manual(values = c(1, 2, 3)) +
+  facetted_pos_scales(y = list(drugSource == "Given for free by a friend"           ~ scale_y_continuous(limits = c(-0.025, 0.625), breaks = seq(0, 0.6, 0.2),   expand = c(0, 0), labels = scales::percent),
+                               drugSource == "Bought from a friend"                 ~ scale_y_continuous(limits = c(-0.025, 0.625), breaks = seq(0, 0.6, 0.2),   expand = c(0, 0), labels = scales::percent),
+                               drugSource == "From a prescription I had"            ~ scale_y_continuous(limits = c(-0.025, 0.625), breaks = seq(0, 0.6, 0.2),   expand = c(0, 0), labels = scales::percent),
+                               drugSource == "Bought from a drug dealer / stranger" ~ scale_y_continuous(limits = c(-0.015, 0.315), breaks = seq(0, 0.30, 0.1),  expand = c(0, 0), labels = scales::percent),
+                               drugSource == "Given for free by a relative"         ~ scale_y_continuous(limits = c(-0.015, 0.315), breaks = seq(0, 0.30, 0.1),  expand = c(0, 0), labels = scales::percent),
+                               drugSource == "Took from a relative"                 ~ scale_y_continuous(limits = c(-0.015, 0.315), breaks = seq(0, 0.30, 0.1),  expand = c(0, 0), labels = scales::percent),
+                               drugSource == "Took from a friend"                   ~ scale_y_continuous(limits = c(-0.0075, 0.14), breaks = seq(0, 0.12, 0.04), expand = c(0, 0), labels = scales::percent),
+                               drugSource == "Bought on the internet"               ~ scale_y_continuous(limits = c(-0.0075, 0.14), breaks = seq(0, 0.12, 0.04), expand = c(0, 0), labels = scales::percent),
+                               drugSource == "Bought from a relative"               ~ scale_y_continuous(limits = c(-0.0075, 0.14), breaks = seq(0, 0.12, 0.04), expand = c(0, 0), labels = scales::percent))) +
+  theme(strip.text.x = element_text(size = 14, face = "bold", color = "black"),
+        legend.text = element_text(size = 16, margin = margin(r = 40), face = "bold", color = "black"),
+        legend.position = "bottom",
+        legend.key.width = unit(2.75, "cm"))
+
+ggsave(file = "C:/Users/jjardine/Desktop/MTF/MTF_Drug_Sources/documentation/AJP_10292024/study_18_ajp_figure_2.pdf", plot = plot_f2, width = 11.5*1.1, height = 9.5*1.1)
+```
+
+# Supplemental Table S1
+
+```{r tabS1, echo = TRUE, message = FALSE, warning = FALSE}
+# get the sample sizes separately for forms 1 and 2, by year
+sSizes1 = form_1 %>% count(year_admin) %>% mutate(n = paste0("n = ", n)) %>% pivot_wider(names_from = year_admin, values_from = n) %>%
+  mutate(variable = "", category = "Form 1 Sample Sizes") %>% relocate(category) %>% relocate(variable)
+sSizes2 = form_2 %>% count(year_admin) %>% mutate(n = paste0("n = ", n)) %>% pivot_wider(names_from = year_admin, values_from = n) %>%
+  mutate(variable = "", category = "Form 2 Sample Sizes") %>% relocate(category) %>% relocate(variable)
+
+# get the weighted percentages and confidence intervals for each demographic category of interest
+demographics = bind_rows(
+  svyby(~I(r_sex_b==1), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(r_sex_b == 1)`) %>% mutate(variable = "Sex", category = "Male"),
+  svyby(~I(r_sex_b==2), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(r_sex_b == 2)`) %>% mutate(variable = "Sex", category = "Female"),
+  
+  svyby(~I(r_race_4==1), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(r_race_4 == 1)`) %>% mutate(variable = "Race / Ethnicity", category = "Black"),
+  svyby(~I(r_race_4==2), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(r_race_4 == 2)`) %>% mutate(variable = "Race / Ethnicity", category = "White"),
+  svyby(~I(r_race_4==3), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(r_race_4 == 3)`) %>% mutate(variable = "Race / Ethnicity", category = "Hispanic"),
+  svyby(~I(r_race_4==4), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(r_race_4 == 4)`) %>% mutate(variable = "Race / Ethnicity", category = "Other"),
+  
+  svyby(~I(pop_dens==0), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(pop_dens == 0)`) %>% mutate(variable = "Population Density", category = "Non-MSA"),
+  svyby(~I(pop_dens==1), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(pop_dens == 1)`) %>% mutate(variable = "Population Density", category = "Other MSA"),
+  svyby(~I(pop_dens==2), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(pop_dens == 2)`) %>% mutate(variable = "Population Density", category = "Large MSA"),
+  
+  svyby(~I(schl_rgn_4==1), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(schl_rgn_4 == 1)`) %>% mutate(variable = "Region", category = "Northeast"),
+  svyby(~I(schl_rgn_4==2), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(schl_rgn_4 == 2)`) %>% mutate(variable = "Region", category = "Midwest"),
+  svyby(~I(schl_rgn_4==3), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(schl_rgn_4 == 3)`) %>% mutate(variable = "Region", category = "South"),
+  svyby(~I(schl_rgn_4==4), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(schl_rgn_4 == 4)`) %>% mutate(variable = "Region", category = "West"),
+  
+  svyby(~I(college_grad_b==0), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(college_grad_b == 0)`) %>% mutate(variable = "Parental Education", category = "Neither parent is a college graduate"),
+  svyby(~I(college_grad_b==1), ~year_admin, desAll, svyciprop, vartype = "ci", method = "logit") %>% rename(pe = `I(college_grad_b == 1)`) %>% mutate(variable = "Parental Education", category = "At least one parent is a college graduate")) %>%
+  mutate(pe = sprintf("%.2f", pe * 100),
+         ci = paste0("(", sprintf("%.2f", ci_l * 100), "-", sprintf("%.2f", ci_u * 100), ")"),
+         ci_l = NULL,
+         ci_u = NULL) %>%
+  pivot_longer(c(pe, ci)) %>%
+  pivot_wider(names_from = year_admin, values_from = value) %>%
+  group_by(variable) %>%
+  mutate(variable = ifelse(row_number() == 1, variable, "")) %>%
+  group_by(category) %>%
+  mutate(category = ifelse(row_number() == 1, category, "")) %>%
+  select(-name)
+
+# join the form sample sizes with the demographics
+tabS1 = list(sSizes1, sSizes2, demographics) %>% bind_rows()
+
+# add the column names 
+names(tabS1) = c("", "", 2009:2022)
+
+write.csv(tabS1, "C:/Users/jjardine/Desktop/MTF/MTF_Drug_Sources/documentation/AJP_10292024/table_S1.csv", row.names = FALSE)
+```
+
+# Supplemental Table S2
+
+```{r tabS2, echo = TRUE, message = FALSE, warning = FALSE}
+# get the results for each row of a table (one variable)
+rowGen = function(.x) {
+  # select the appropriate dataset based on the variable
+  dat = if(.x %in% names(form_1)) {form_1} else {form_2}
+  # rename the variable of interest for use in the "svyby" function
+  dat = dat %>% rename(myvar = !!sym(.x))
+  
+  # create the survey design object
+  des = svydesign(ids = ~1, data = dat, weights = ~sampling_weight)
+  
+  # get the point estimate and confidence interval for prevalence for each year group
+  mat = svyby(~myvar, ~year_group, des, svyciprop, vartype = "ci", method = "logit")
+  
+  # get the counts of positive cases for each year group
+  n_s = c(dat %>% filter(year_group == 0 & myvar == 1) %>% nrow(),
+          dat %>% filter(year_group == 1 & myvar == 1) %>% nrow(),
+          dat %>% filter(year_group == 2 & myvar == 1) %>% nrow(),
+          dat %>% filter(year_group == 3 & myvar == 1) %>% nrow(),
+          dat %>% filter(year_group == 4 & myvar == 1) %>% nrow(),
+          dat %>% filter(year_group == 5 & myvar == 1) %>% nrow(),
+          dat %>% filter(year_group == 6 & myvar == 1) %>% nrow())
+  
+  # create a two-row matrix of the point estimates and confidence intervals where the format
+  # is the following for each year group:
+  #     n (xx.xx)
+  #  (yy.yy - zz.zz)
+  pe_ci = rbind(paste0(n_s, " (", sprintf("%.2f", mat[, 2]*100), ")"),
+                paste0("(", sprintf("%.2f", mat[, 3]*100), "-", sprintf("%.2f", mat[, 4]*100), ")"))
+  
+  # fit the logistic regression model
+  mod = glm(myvar ~ year_group + as.factor(r_sex_b) + as.factor(r_race_4) + as.factor(pop_dens) + as.factor(schl_rgn_4) + as.factor(college_grad_b),
+            weights = sampling_weight,
+            data = dat,
+            family = binomial)
+  
+  # get the point estimate and confidence interval for the OR
+  # using the stata formulation for the standard errors
+  or = sprintf("%.2f", exp(coef(mod)[["year_group"]]))
+  ci = exp(coefci(mod, vcov. = sandwich1))
+  ci_lb = sprintf("%.2f", ci[2, 1]); ci_ub = sprintf("%.2f", ci[2, 2])
+  
+  # combine the results into two rows
+  or_ci = rbind(or, paste0("(", ci_lb, "-", ci_ub, ")"))
+  
+  return(cbind(pe_ci, or_ci))
+}
+
+# generate all rows and collapse into a dataframe
+choice_vars = c("amph_last12m_b", "dr_told_tk_amph_b", "trql_last12m_b", "dr_told_tk_trnq_b", "narc_last12m_b", "dr_told_tk_narc_b")
+tabS2 = data.frame(do.call(rbind, map(choice_vars, rowGen))) %>% mutate(X0 = "") %>% relocate(X0)
+
+# calculate the total sample sizes
+sSizes = map(choice_vars,
+             function(.y) {
+               c(paste0("n = ", form_1 %>% group_by(year_group) %>% summarize(n = sum(!is.na(!!sym(.y)))) %>% pull(n)),
+                 paste0("n = ", form_1 %>% select(year_group, r_sex_b, r_race_4, pop_dens, schl_rgn_4, college_grad_b, !!sym(.y)) %>% filter(complete.cases(.)) %>% nrow())) })
+
+sSizes[c(1, 3, 5)] = map(sSizes[c(1, 3, 5)], ~ c("  Past-year nonmedical use", .x))
+sSizes[c(2, 4, 6)] = map(sSizes[c(2, 4, 6)], ~ c("  Lifetime medical use", .x))
+
+# add the sample sizes in between rows
+tabS2 = rbind(c("Prescription stimulants", rep("", 8)),
+              sSizes[[1]], tabS2[1:2, ],
+              sSizes[[2]], tabS2[3:4, ],
+              c("Prescription benzodiazepines", rep("", 8)),
+              sSizes[[3]], tabS2[5:6, ],
+              sSizes[[4]], tabS2[7:8, ],
+              c("Prescription opioids", rep("", 8)),
+              sSizes[[5]], tabS2[9:10, ],
+              sSizes[[6]], tabS2[11:12, ])
+
+# add some header rows
+tabS2 = rbind(c("", rep("No. (%)", 7), "aOR"),
+              c("Measures", rep("95% CI", 8)),
+              tabS2)
+row.names(tabS2) = 1:nrow(tabS2)
+
+# add the column names (year groups)
+names(tabS2) = c("", "2009-2010", "2011-2012", "2013-2014", "2015-2016", "2017-2018", "2019-2020", "2021-2022", "Linear Trend")
+
+write.csv(tabS2, "C:/Users/jjardine/Desktop/MTF/MTF_Drug_Sources/documentation/AJP_10292024/table_S2.csv", row.names = FALSE)
+```
+
+# Supplemental Table S3
+
+```{r tabS3, echo = TRUE, message = FALSE, warning = FALSE}
+# generate all rows and collapse into a dataframe
+choice_vars = c("easy_gt_amphtmns1", "easy_gt_amphtmns2", "easy_gt_amphtmns3", "easy_gt_amphtmns4", "easy_gt_amphtmns5",
+                "easy_gt_tranqliz1", "easy_gt_tranqliz2", "easy_gt_tranqliz3", "easy_gt_tranqliz4", "easy_gt_tranqliz5",
+                "easy_gt_narcotic1", "easy_gt_narcotic2", "easy_gt_narcotic3", "easy_gt_narcotic4", "easy_gt_narcotic5")
+
+tabS3 = data.frame(do.call(rbind, map(choice_vars, rowGen))) %>%
+  mutate(X0 = c(rbind(rep(c("  Probably impossible", "  Very difficult", "  Fairly difficult", "  Fairly easy", "  Very easy"), 3),
+                      rep("", 15)))) %>%
+  relocate(X0)
+
+# calculate the total sample sizes
+sSizes = map(choice_vars[c(1, 6, 11)],
+             function(.y) {
+               c(paste0("n = ", form_2 %>% group_by(year_group) %>% summarize(n = sum(!is.na(!!sym(.y)))) %>% pull(n)),
+                 paste0("n = ", form_2 %>% select(year_group, r_sex_b, r_race_4, pop_dens, schl_rgn_4, college_grad_b, !!sym(.y)) %>% filter(complete.cases(.)) %>% nrow())) })
+
+sSizes[[1]] = c("Rx stimulants",      sSizes[[1]])
+sSizes[[2]] = c("Rx benzodiazepines", sSizes[[2]])
+sSizes[[3]] = c("Rx opioids",         sSizes[[3]])
+
+# add the sample sizes in between rows
+tabS3 = rbind(sSizes[[1]], tabS3[1:10,  ],
+              sSizes[[2]], tabS3[11:20, ],
+              sSizes[[3]], tabS3[21:30, ])
+
+# add some header rows
+tabS3 = rbind(c("", rep("No. (%)", 7), "aOR"),
+              c("Difficulty of getting drugs", rep("95% CI", 8)),
+              tabS3)
+row.names(tabS3) = 1:nrow(tabS3)
+
+# add the column names (year groups)
+names(tabS3) = c("", "2009-2010", "2011-2012", "2013-2014", "2015-2016", "2017-2018", "2019-2020", "2021-2022", "Linear Trend")
+
+write.csv(tabS3, "C:/Users/jjardine/Desktop/MTF/MTF_Drug_Sources/documentation/AJP_10292024/table_S3.csv", row.names = FALSE)
+```
+
+# Supplemental Table S4
+
+```{r tabS4, echo = TRUE, message = FALSE, warning = FALSE}
+# generate all rows and collapse into a dataframe
+choice_vars = c("amph_src_internt", "amph_src_frnd_ask", "amph_src_rltv_ask", "amph_src_frnd_free", "amph_src_rltv_free", "amph_src_frnd_bght", "amph_src_rltv_bght", "amph_src_prescrp", "amph_src_dealer", "amph_src_other",
+                "trq_src_internet",  "trq_src_frnd_ask",  "trq_src_rltv_ask",  "trq_src_frnd_free",  "trq_src_rltv_free",  "trq_src_frnd_bght",  "trq_src_rltv_bght", "trq_src_prescrpt",  "trq_src_dealer",  "trq_src_other",
+                "narc_src_internt", "narc_src_frnd_ask", "narc_src_rltv_ask", "narc_src_frnd_free", "narc_src_rltv_free", "narc_src_frnd_bght", "narc_src_rltv_bght", "narc_src_prescrp", "narc_src_dealer", "narc_src_other")
+
+tabS4 = data.frame(do.call(rbind, map(choice_vars, rowGen))) %>%
+  mutate(X0 = c(rbind(rep(c("  Bought on the internet", "  Took from a friend",     "  Took from a relative",     "  Given for free by a friend",            "  Given for free by a relative",
+                            "  Bought from a friend",   "  Bought from a relative", "  From a prescription I had", "  Bought from a drug dealer / stranger", "  Other"), 3),
+                      rep("", 30)))) %>%
+  relocate(X0)
+
+# calculate the total sample sizes
+sSizes = map(choice_vars[c(1, 11, 21)],
+             function(.y) {
+               c(paste0("n = ", form_1 %>% group_by(year_group) %>% summarize(n = sum(!is.na(!!sym(.y)))) %>% pull(n)),
+                 paste0("n = ", form_1 %>% select(year_group, r_sex_b, r_race_4, pop_dens, schl_rgn_4, college_grad_b, !!sym(.y)) %>% filter(complete.cases(.)) %>% nrow())) })
+
+sSizes[[1]] = c("Stimulants",      sSizes[[1]])
+sSizes[[2]] = c("Benzodiazepines", sSizes[[2]])
+sSizes[[3]] = c("Opioids",         sSizes[[3]])
+
+# add the sample sizes in between rows
+tabS4 = rbind(sSizes[[1]], tabS4[1:20, ],
+              sSizes[[2]], tabS4[21:40, ],
+              sSizes[[3]], tabS4[41:60, ])
+
+# add some header rows
+tabS4 = rbind(c("", rep("No. (%)", 7), "aOR"),
+              c("Diversion sources for nonmedical use", rep("95% CI", 8)),
+              tabS4)
+row.names(tabS4) = 1:nrow(tabS4)
+
+# add the column names (year groups)
+names(tabS4) = c("", "2009-2010", "2011-2012", "2013-2014", "2015-2016", "2017-2018", "2019-2020", "2021-2022", "Linear Trend")
+
+write.csv(tabS4, "C:/Users/jjardine/Desktop/MTF/MTF_Drug_Sources/documentation/AJP_10292024/table_S4.csv", row.names = FALSE)
+```

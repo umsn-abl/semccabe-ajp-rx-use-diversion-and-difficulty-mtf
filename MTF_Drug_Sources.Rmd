@@ -1,0 +1,388 @@
+---
+title: "MTF Drug Sources Data Prep"
+subtitle: "Grade 12: 2009-2022"
+author: "John Jardine"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: cosmo
+    toc: TRUE
+---
+
+<style type="text/css">
+.main-container {
+  max-width: 100% !important;
+  margin: auto;
+}
+</style>
+
+# Notes
+
+- "-9" set as "missing" for all variables
+  
+- "-1" (screen break issue) is present in the following variables for form 2. These were left as-is
+  + easy_gt_amphtmns (2021)
+  + easy_gt_tranqliz (2020 & 2021)
+  + easy_gt_narcotic (2021)
+  
+- See the "Oddities" section for inconsistencies in the data
+  
+# Data Download Steps
+  
+- https://www.icpsr.umich.edu/web/ICPSR/studies/28401 (Version Date: Oct 27, 2010)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/30985 (Version Date: Oct 26, 2011)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/34409 (Version Date: Nov 20, 2012)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/34861 (Version Date: Mar 26, 2015)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/35218 (Version Date: Mar 26, 2015)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/36263 (Version Date: May 24, 2017)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/36408 (Version Date: Oct 25, 2016)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/36798 (Version Date: Oct 26, 2017)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/37182 (Version Date: Oct 29, 2018)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/37416 (Version Date: Nov 19, 2019)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/37841 (Version Date: Oct 29, 2020)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/38156 (Version Date: Oct 26, 2021)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/38503 (Version Date: Oct 31, 2022)
+- https://www.icpsr.umich.edu/web/ICPSR/studies/38882 (Version Date: Oct 31, 2023)
+  
+--> Click "Download" button  
+--> Choose "SPSS"  
+--> Unzip  
+--> Place folders into "path_data" below  
+  
+# Perform Set-up and Read in the Data
+
+```{r setup, echo = TRUE, message = FALSE, warning = FALSE}
+# local directories where data-related and code-related files are located
+path_data = "C:/Users/jjardine/Desktop/MTF/MTF_Drug_Sources/data/"
+path_code = "C:/Users/jjardine/Desktop/MTF/MTF_Drug_Sources/code/"
+
+# tidyverse for data manipulation,
+# haven for reading spss files,
+# knitr/kableExtra for table generation
+if(!("pacman" %in% rownames(installed.packages()))) {install.packages("pacman")}
+library(pacman)
+p_load(tidyverse, haven, knitr, kableExtra)
+
+# get the file paths for all grade 12 forms 1/2 datasets
+files = list.files(path_data)
+files = rep(files, each = 2)
+files = paste0(path_data, files, "/", sub("-.*", "", files), "/DS000", 2:3, "/")
+files = paste0(files, list.files(files)[grepl(".sav", list.files(files))])
+
+# read in all the datasets
+dfs = map(files, ~ read_spss(.x, user_na = TRUE))
+names(dfs) = sub(".*\\/", "", files)
+```
+
+# Subset the Data
+
+```{r subset, echo = TRUE, message = FALSE, warning = FALSE}
+# read in external file that contain all the variable names we want
+Var_Names = read.csv(paste0(path_code, "Var_Names.csv")) %>%
+  mutate(Old_Name = paste0("^", Old_Name, "$"))
+
+# get variables of interest in each dataset
+dfs_sub = map(dfs, ~ .x %>% select(matches(paste(Var_Names$Old_Name, collapse = "|"))))
+
+# change the names in each dataset
+dfs_named = map(dfs_sub,
+                function(.x) {
+                  names_12 = Var_Names %>%
+                    mutate(Old_Name = gsub("$", "", gsub("^", "", Old_Name, fixed = TRUE), fixed = TRUE)) %>%
+                    filter(Old_Name %in% names(.x))
+                  .x = .x %>% select(names_12$Old_Name)
+                  names(.x) = names_12$New_Name
+                  return(.x)
+                })
+```
+
+# Original Column Labels
+
+```{r origLabels, echo = TRUE, message = FALSE, warning = FALSE}
+# create a file with the column labels from the original datasets as a check
+# that the correct variables were pulled
+allVars = expand.grid(fileName = names(dfs_named),
+                      newName = unique(unlist(map(dfs_named, ~ names(.x)))))
+allVars$oldLabel = map2(allVars$fileName,
+                        allVars$newName,
+                        function(.x, .y) {
+                          if(.y %in% names(dfs_named[[.x]])) {
+                            return(attr(dfs_named[[.x]][[.y]], "label"))
+                          }
+                          return(NA)
+                        })
+allVars = allVars %>%
+  pivot_wider(id_cols = "fileName", names_from = "newName", values_from = "oldLabel") %>%
+  mutate_all(as.character)
+write.csv(allVars, paste0(path_code, "orig_labels.csv"), row.names = FALSE)
+```
+
+# Combine the Data and Handle Missing Values
+
+```{r combine, echo = TRUE, message = FALSE, warning = FALSE}
+# combine the datasets for each year by form number
+form_1 = bind_rows(dfs_named[names(dfs_named)[grepl("-0002-", names(dfs_named))]])
+form_2 = bind_rows(dfs_named[names(dfs_named)[grepl("-0003-", names(dfs_named))]])
+
+# convert all the columns to numeric
+form_1 = form_1 %>% mutate_all(as.numeric)
+form_2 = form_2 %>% mutate_all(as.numeric)
+
+# replace -9 with NA for all variables
+form_1[form_1 == -9] = NA
+form_2[form_2 == -9] = NA
+
+# check for instances of the "screen break" issue (-1) and print what variables
+# were affected in each year (the function assumes that "year_admin" is in the first column)
+screen_break = function(dat) {
+  return(
+    bind_rows(map(2:ncol(dat),
+                  function(.x) {
+                    results = dat[, c(1, .x)] %>%
+                      filter(rowSums(. == -1) != 0) %>%
+                      group_by(year_admin) %>%
+                      summarize(n = n()) %>%
+                      mutate(variable = names(dat)[.x]) %>%
+                      relocate(variable, .before = year_admin)
+                    if(nrow(results!=0)) {return(results)}
+                  }))
+  )
+}
+screen_break(form_1)
+screen_break(form_2)
+
+# check for any instances where lifetime usage for a substance is recorded as "0 occasions",
+# but the value for last 12-month usage is missing
+form_1 %>% filter(amph_lifetim == 1 & is.na(amph_last12m)) %>% nrow()
+form_1 %>% filter(trql_lifetim == 1 & is.na(trql_last12m)) %>% nrow()
+form_1 %>% filter(narc_lifetim == 1 & is.na(narc_last12m)) %>% nrow()
+
+# check for any instances where last 30-day usage for a substance is recorded as ">0 occasions",
+# but the value for last 12-month usage is missing
+form_1 %>% filter(amph_last30da >= 2 & is.na(amph_last12m)) %>% nrow()
+form_1 %>% filter(trql_last30da >= 2 & is.na(trql_last12m)) %>% nrow()
+form_1 %>% filter(narc_last30da >= 2 & is.na(narc_last12m)) %>% nrow()
+
+# check for any instances where last 30-day or last 12-month usage for a substance is recorded
+# as ">0 occasions", but the value for lifetime usage is missing
+form_1 %>% filter((amph_last30da >= 2 | amph_last12m >= 2) & is.na(amph_lifetim)) %>% nrow()
+form_1 %>% filter((trql_last30da >= 2 | trql_last12m >= 2) & is.na(trql_lifetim)) %>% nrow()
+form_1 %>% filter((narc_last30da >= 2 | narc_last12m >= 2) & is.na(narc_lifetim)) %>% nrow()
+```
+
+# Creation of New Variables
+
+```{r create, echo = TRUE, message = FALSE, warning = FALSE}
+# function to create variables that are common across both forms
+transform = function(dat) {
+  dat %>%
+    # combine years into two-year bins
+    mutate(year_group = case_when(year_admin %in% 2009:2010 ~ 0,
+                                  year_admin %in% 2011:2012 ~ 1,
+                                  year_admin %in% 2013:2014 ~ 2,
+                                  year_admin %in% 2015:2016 ~ 3,
+                                  year_admin %in% 2017:2018 ~ 4,
+                                  year_admin %in% 2019:2020 ~ 5,
+                                  year_admin %in% 2021:2022 ~ 6),
+           # create a population density variable by combining self_rep_large_msa & msa_non_msa,
+           # such that 0 = smallest (rural), 1 = medium-sized (suburban), and 2 = largest (urban)
+           pop_dens = case_when(self_rep_large_msa == 0 & msa_non_msa == 0 ~ 0,
+                                self_rep_large_msa == 0 & msa_non_msa == 1 ~ 1,
+                                self_rep_large_msa == 1 & msa_non_msa == 1 ~ 2),
+           # create a dichotomous "sex" variable where responses other than "male" and "female" are set to NA
+           r_sex_b = ifelse(r_sex == 1 | r_sex == 2, r_sex, NA),
+           # create a new race variable where missing values are replaced with 4
+           r_race_4 = ifelse(is.na(r_race), 4, r_race),
+           # create a dichotomous "at least one parent is a college graduate" measure
+           fathr_educ_temp = ifelse(fathr_educ_level == 7, NA, fathr_educ_level),
+           mothr_educ_temp = ifelse(mothr_educ_level == 7, NA, mothr_educ_level),
+           college_grad_b = as.numeric(pmax(fathr_educ_temp, mothr_educ_temp, na.rm = TRUE) >= 5),
+           # dichotomize the last 12-month non-medical drug use variables
+           amph_last12m_b = as.numeric(amph_last12m >= 2),
+           trql_last12m_b = as.numeric(trql_last12m >= 2),
+           narc_last12m_b = as.numeric(narc_last12m >= 2),
+           # create a composite last 12-month non-medical drug use variable such that it is set to 1 if the
+           # respondent indicates any non-medical amphetamine, tranquilizer, or narcotic use. else, set it to
+           # 0 if the respondent indicates "no use" for at least one of the component drugs. else, set it to NA
+           any_last12m_nonmed_b = pmax(amph_last12m >= 2, trql_last12m >= 2, narc_last12m >= 2, na.rm = TRUE)) %>%
+    select(-c(fathr_educ_temp, mothr_educ_temp))
+}
+
+# create the new variables
+form_1 = transform(form_1)
+form_2 = transform(form_2)
+
+# create a composite lifetime categorical variable for all prescription drugs where 0 = no use,
+# 1 = medical use only, 2 = both medical and non-medical use, and 3 = non-medical use only
+form_1 = form_1 %>%
+  rowwise() %>%
+  mutate(any_lifetim_cat4 = case_when(
+    # both medical and non-medical use
+    dr_told_tk_amph == 2 | dr_told_tk_trnq == 2 | dr_told_tk_narc == 2 ~ 2,
+    (amph_lifetim >= 2 | trql_lifetim >= 2 | narc_lifetim >= 2) & (dr_told_tk_amph == 3 | dr_told_tk_trnq == 3 | dr_told_tk_narc == 3) ~ 2,
+    # medical use only
+    dr_told_tk_amph == 3 | dr_told_tk_trnq == 3 | dr_told_tk_narc == 3 ~ 1,
+    # nonmedical use only
+    amph_lifetim >= 2 | trql_lifetim >= 2 | narc_lifetim >= 2 ~ 3,
+    # no use
+    amph_lifetim == 1 | trql_lifetim == 1 | narc_lifetim == 1 | dr_told_tk_amph == 1 | dr_told_tk_trnq == 1 | dr_told_tk_narc == 1 ~ 0)) %>%
+  ungroup()
+
+# split the composite lifetime categorical variable into three dummy variables
+form_1 = form_1 %>%
+  mutate(any_lifetim_medOnly = as.numeric(any_lifetim_cat4 == 1),
+         any_lifetim_both = as.numeric(any_lifetim_cat4 == 2),
+         any_lifetim_nonmedOnly = as.numeric(any_lifetim_cat4 == 3))
+
+# create a composite lifetime medical drug use variable such that it is set to 1 if the respondent
+# indicates any lifetime medical amphetamine, tranquilizer, or narcotic use. else, set it to 0 if
+# the respondent indicates "no use" for at least one of the component substances. else, set it to NA
+form_1 = form_1 %>%
+  mutate(dr_told_tk_any_b = case_when(
+    dr_told_tk_amph %in% 2:3 | dr_told_tk_trnq %in% 2:3 | dr_told_tk_narc %in% 2:3 ~ 1,
+    dr_told_tk_amph == 1 | dr_told_tk_trnq == 1 | dr_told_tk_narc == 1 ~ 0))
+
+# dichotomize the "ease of getting substances" variables such that each is set to 1 if the respondent
+# indicates it is "probably impossible" to get that class of drug, and 0 otherwise
+form_2 = form_2 %>%
+  mutate(easy_gt_amphtmns_b = case_when(easy_gt_amphtmns == 1 ~ 1,
+                                        easy_gt_amphtmns %in% 2:5 ~ 0),
+         easy_gt_tranqliz_b = case_when(easy_gt_tranqliz == 1 ~ 1,
+                                        easy_gt_tranqliz %in% 2:5 ~ 0),
+         easy_gt_narcotic_b = case_when(easy_gt_narcotic == 1 ~ 1,
+                                        easy_gt_narcotic %in% 2:5 ~ 0))
+
+# create a composite "ease of getting substances" variable such that it is the minimum of the responses
+# for the three drug types. then, create a composite "ease of getting substances" dummy variable that
+# is set to 1 if the respondent indicates it is "probably impossible" to get at least one of the types
+# of drugs. else, set it to 0 as long as not all three responses for the component drugs are missing
+form_2 = form_2 %>%
+  mutate(easy_gt_amphtmns_temp = ifelse(easy_gt_amphtmns == -1, NA, easy_gt_amphtmns),
+         easy_gt_tranqliz_temp = ifelse(easy_gt_tranqliz == -1, NA, easy_gt_tranqliz),
+         easy_gt_narcotic_temp = ifelse(easy_gt_narcotic == -1, NA, easy_gt_narcotic),
+         
+         easy_gt_any   = pmin(easy_gt_amphtmns_temp, easy_gt_tranqliz_temp, easy_gt_narcotic_temp, na.rm = TRUE),
+         easy_gt_any_b = as.numeric(easy_gt_any == 1)) %>%
+  select(-c(easy_gt_amphtmns_temp, easy_gt_tranqliz_temp, easy_gt_narcotic_temp))
+
+# create dummy variables for each level of the "ease of getting substance" variable for each drug class
+form_2 = form_2 %>%
+  mutate(easy_gt_amphtmns1 = ifelse(easy_gt_amphtmns == -1, NA, as.numeric(easy_gt_amphtmns == 1)),
+         easy_gt_amphtmns2 = ifelse(easy_gt_amphtmns == -1, NA, as.numeric(easy_gt_amphtmns == 2)),
+         easy_gt_amphtmns3 = ifelse(easy_gt_amphtmns == -1, NA, as.numeric(easy_gt_amphtmns == 3)),
+         easy_gt_amphtmns4 = ifelse(easy_gt_amphtmns == -1, NA, as.numeric(easy_gt_amphtmns == 4)),
+         easy_gt_amphtmns5 = ifelse(easy_gt_amphtmns == -1, NA, as.numeric(easy_gt_amphtmns == 5)),
+         # create an inverse of the "probably impossible" dummy variable, i.e., very difficult to very easy
+         easy_gt_amphtmns_not1 = as.numeric(!easy_gt_amphtmns1),
+         
+         easy_gt_tranqliz1 = ifelse(easy_gt_tranqliz == -1, NA, as.numeric(easy_gt_tranqliz == 1)),
+         easy_gt_tranqliz2 = ifelse(easy_gt_tranqliz == -1, NA, as.numeric(easy_gt_tranqliz == 2)),
+         easy_gt_tranqliz3 = ifelse(easy_gt_tranqliz == -1, NA, as.numeric(easy_gt_tranqliz == 3)),
+         easy_gt_tranqliz4 = ifelse(easy_gt_tranqliz == -1, NA, as.numeric(easy_gt_tranqliz == 4)),
+         easy_gt_tranqliz5 = ifelse(easy_gt_tranqliz == -1, NA, as.numeric(easy_gt_tranqliz == 5)),
+         # create an inverse of the "probably impossible" dummy variable, i.e., very difficult to very easy
+         easy_gt_tranqliz_not1 = as.numeric(!easy_gt_tranqliz1),
+         
+         easy_gt_narcotic1 = ifelse(easy_gt_narcotic == -1, NA, as.numeric(easy_gt_narcotic == 1)),
+         easy_gt_narcotic2 = ifelse(easy_gt_narcotic == -1, NA, as.numeric(easy_gt_narcotic == 2)),
+         easy_gt_narcotic3 = ifelse(easy_gt_narcotic == -1, NA, as.numeric(easy_gt_narcotic == 3)),
+         easy_gt_narcotic4 = ifelse(easy_gt_narcotic == -1, NA, as.numeric(easy_gt_narcotic == 4)),
+         easy_gt_narcotic5 = ifelse(easy_gt_narcotic == -1, NA, as.numeric(easy_gt_narcotic == 5)),
+         # create an inverse of the "probably impossible" dummy variable, i.e., very difficult to very easy
+         easy_gt_narcotic_not1 = as.numeric(!easy_gt_narcotic1))
+
+# create dummy variables for each level of the composite "ease of getting substances" variable
+form_2 = form_2 %>%
+  mutate(easy_gt_any1 = as.numeric(easy_gt_any == 1),
+         easy_gt_any2 = as.numeric(easy_gt_any == 2),
+         easy_gt_any3 = as.numeric(easy_gt_any == 3),
+         easy_gt_any4 = as.numeric(easy_gt_any == 4),
+         easy_gt_any5 = as.numeric(easy_gt_any == 5),
+         # create an inverse of the "probably impossible" dummy variable, i.e., very difficult to very easy
+         easy_gt_any_not1 = as.numeric(!easy_gt_any1))
+
+# create composite drug source variables that are set to 1 if the respondent answered 1 for
+# at least one of the three drug types. else, set it to 0 if the respondent answered 0 for at
+# least one of the three drug types. else, set it to missing
+form_1 = form_1 %>%
+  mutate(
+    src_internt	  = pmax(amph_src_internt,   trq_src_internet,  narc_src_internt,   na.rm = TRUE),
+    src_frnd_ask  = pmax(amph_src_frnd_ask,  trq_src_frnd_ask,  narc_src_frnd_ask,  na.rm = TRUE),
+    src_rltv_ask  = pmax(amph_src_rltv_ask,  trq_src_rltv_ask,  narc_src_rltv_ask,  na.rm = TRUE),
+    src_frnd_free = pmax(amph_src_frnd_free, trq_src_frnd_free, narc_src_frnd_free, na.rm = TRUE),
+    src_rltv_free = pmax(amph_src_rltv_free, trq_src_rltv_free, narc_src_rltv_free, na.rm = TRUE),
+    src_frnd_bght = pmax(amph_src_frnd_bght, trq_src_frnd_bght, narc_src_frnd_bght, na.rm = TRUE),
+    src_rltv_bght = pmax(amph_src_rltv_bght, trq_src_rltv_bght, narc_src_rltv_bght, na.rm = TRUE),
+    src_prescrp   = pmax(amph_src_prescrp,   trq_src_prescrpt,  narc_src_prescrp,   na.rm = TRUE),
+    src_dealer    = pmax(amph_src_dealer,    trq_src_dealer,    narc_src_dealer,    na.rm = TRUE),
+    src_other     = pmax(amph_src_other,     trq_src_other,     narc_src_other,     na.rm = TRUE))
+
+# create dummy variables indicating if a respondent acquired a given drug from just 1 source,
+# or 2 or more sources
+form_1 = form_1 %>%
+  rowwise() %>%
+  mutate(amph_src_mult = sum(c_across(contains("amph_src")), na.rm = TRUE),
+         trq_src_mult  = sum(c_across(contains("trq_src")),  na.rm = TRUE),
+         narc_src_mult = sum(c_across(contains("narc_src")), na.rm = TRUE),
+         any_src_mult =  sum(c_across(matches("^src")),      na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(across(c(amph_src_mult, trq_src_mult, narc_src_mult, any_src_mult),
+                ~ case_when(.x == 0 ~ NA,
+                            .x == 1 ~ 0,
+                            .x >= 2 ~ 1)))
+
+# collapse some of the drug source variables into 3 groups: "friend", "relative", "bought on internet/
+# from drug dealer"
+form_1 = form_1 %>%
+  mutate(
+    src_frnd      = pmax(src_frnd_ask,       src_frnd_free,     src_frnd_bght,      na.rm = TRUE),
+    src_rltv      = pmax(src_rltv_ask,       src_rltv_free,     src_rltv_bght,      na.rm = TRUE),
+    src_bought    = pmax(src_internt,        src_dealer,                            na.rm = TRUE))
+
+# save the files locally in stata format
+write_dta(form_1, paste0(path_code, "form_1_2009_2022.dta"))
+write_dta(form_2, paste0(path_code, "form_2_2009_2022.dta"))
+```
+
+# Oddities
+
+Note that there are instances where a respondent answers the question about where they got the substance from that they used in the last year, but they didn't answer the question about last year usage (and vice versa). These cases have been left as-is for now
+
+```{r odd1, echo = FALSE, message = FALSE, warning = FALSE}
+form_1 %>%
+  count(as.numeric(amph_last12m >= 2), amph_src_internt) %>%
+  kable() %>%
+  kable_classic_2("striped")
+
+form_1 %>%
+  count(as.numeric(trql_last12m >= 2), trq_src_internet) %>%
+  kable() %>%
+  kable_classic_2("striped")
+
+form_1 %>%
+  count(as.numeric(narc_last12m >= 2), narc_src_internt) %>%
+  kable() %>%
+  kable_classic_2("striped")
+```
+
+Note that there are instances where a respondent has all 0's for the diversion source questions (whereas they should have at least one 1, or all of the values should be missing). These cases were set to missing when calculating the ">= 2 sources" dummy variables. However, these 0's were left as-is in all other calculations.
+
+```{r odd2, echo = FALSE, message = FALSE, warning = FALSE}
+form_1 %>%
+  filter(is.na(amph_src_mult) & !is.na(amph_src_internt)) %>%
+  count(year_admin) %>%
+  kable(caption = "amphetamines") %>%
+  kable_classic_2("striped")
+
+form_1 %>%
+  filter(is.na(trq_src_mult) & !is.na(trq_src_internet)) %>%
+  count(year_admin) %>%
+  kable(caption = "tranquilizers") %>%
+  kable_classic_2("striped")
+
+form_1 %>%
+  filter(is.na(narc_src_mult) & !is.na(narc_src_internt)) %>%
+  count(year_admin) %>%
+  kable(caption = "narcotics") %>%
+  kable_classic_2("striped")
+```
